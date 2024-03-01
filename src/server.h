@@ -48,12 +48,12 @@ public:
         close(serverSocket);
     }
 
-    void registerFunction(const std::string& filepath, std::function<std::string()> function) {
+    void registerFunction(const std::string& filepath, std::function<std::string(int, const std::string&)> function) {
         functions[filepath] = function;
     }
 
     void registerFile(const std::string& filepath, const std::string& filename) {
-        functions[filepath] = [filename]() {
+        functions[filepath] = [filename](int clientSocket, const std::string& request) {
             std::string response = "HTTP/1.1 200 OK\nContent-Type: text/html\n\n";
             std::string line;
             std::ifstream file(filename);
@@ -75,7 +75,7 @@ public:
 
 private:
     int port;
-    std::unordered_map<std::string, std::function<std::string()>> functions;
+    std::unordered_map<std::string, std::function<std::string(int, const std::string&)>> functions;
 
     void handleRequest(int clientSocket) {
         char buffer[1024] = {0};
@@ -88,7 +88,7 @@ private:
         std::string filepath = extractFilePath(request);
 
         if (functions.find(filepath) != functions.end()) {
-            response = functions[filepath]();
+            response = functions[filepath](clientSocket, request);
         } else {
             response = "HTTP/1.1 404 Not Found\nContent-Type: text/html\n\n404 Not Found";
         }
