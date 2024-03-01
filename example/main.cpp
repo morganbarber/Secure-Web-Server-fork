@@ -3,12 +3,11 @@
 #include <string>
 #include <functional>
 
-
 int main() {
     WebServer server(8080);
 
-    server.registerFunction("/add", []() {
-        std::string request;
+    server.registerFunction("/add", [](int, const std::string& request) {
+        std::string response;
 
         size_t start = request.find("num1=") + 5;
         size_t end = request.find("&num2=");
