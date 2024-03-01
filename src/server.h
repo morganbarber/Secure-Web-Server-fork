@@ -1,125 +1,112 @@
-
 #include <iostream>
 #include <string>
-#include <thread>
-#include <chrono>
-#include <ctime>
-#include <fstream>
-#include <sstream>
-#include <vector>
-#include <map>
-#include <regex>
-#include <algorithm>
 #include <cstring>
-#include <cstdlib>
-#include <cstdio>
-#include <unistd.h>
 #include <sys/socket.h>
-#include <netinet/in.h>
 #include <arpa/inet.h>
+#include <unistd.h>
+#include <unordered_map>
+#include <functional>
+#include <fstream>
 
 class WebServer {
 public:
     WebServer(int port) : port(port) {}
 
     void start() {
-        int server_fd, new_socket;
-        struct sockaddr_in address;
-        int opt = 1;
-        int addrlen = sizeof(address);
-
-        // Create socket file descriptor
-        if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
-            perror("socket failed");
-            exit(EXIT_FAILURE);
+        int serverSocket = socket(AF_INET, SOCK_STREAM, 0);
+        if (serverSocket == -1) {
+            std::cerr << "Failed to create socket" << std::endl;
+            return;
         }
 
-        // Attach socket to the port
-        if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt))) {
-            perror("setsockopt");
-            exit(EXIT_FAILURE);
-        }
-        address.sin_family = AF_INET;
-        address.sin_addr.s_addr = INADDR_ANY;
-        address.sin_port = htons(port);
+        sockaddr_in serverAddress;
+        serverAddress.sin_family = AF_INET;
+        serverAddress.sin_addr.s_addr = INADDR_ANY;
+        serverAddress.sin_port = htons(port);
 
-        if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
-            perror("bind failed");
-            exit(EXIT_FAILURE);
+        if (bind(serverSocket, (struct sockaddr *)&serverAddress, sizeof(serverAddress)) < 0) {
+            std::cerr << "Failed to bind socket" << std::endl;
+            return;
         }
 
-        if (listen(server_fd, 3) < 0) {
-            perror("listen");
-            exit(EXIT_FAILURE);
+        listen(serverSocket, 3);
+
+        std::cout << "Server started on port " << port << std::endl;
+
+        int clientSocket;
+        sockaddr_in clientAddress;
+        int clientAddressLength = sizeof(clientAddress);
+
+        while ((clientSocket = accept(serverSocket, (struct sockaddr *)&clientAddress, (socklen_t *)&clientAddressLength))) {
+            std::cout << "New connection accepted" << std::endl;
+
+            handleRequest(clientSocket);
+
+            close(clientSocket);
         }
 
-        while (true) {
-            if ((new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen)) < 0) {
-                perror("accept");
-                exit(EXIT_FAILURE);
+        close(serverSocket);
+    }
+
+    void registerFunction(const std::string& filepath, std::function<std::string()> function) {
+        functions[filepath] = function;
+    }
+
+    void registerFile(const std::string& filepath, const std::string& filename) {
+        functions[filepath] = [filename]() {
+            std::string response = "HTTP/1.1 200 OK\nContent-Type: text/html\n\n";
+            std::string line;
+            std::ifstream file(filename);
+
+            try {
+                while (getline(file, line)) {
+                    response += line + "\n";
+                }
+                file.close();
+            }
+            catch (const std::exception& e) {
+                std::cout << "Failed to read file " << filename << std::endl;
+                response = "HTTP/1.1 404 Not Found\nContent-Type: text/html\n\n404 Not Found";
             }
 
-            std::thread t(&WebServer::handleRequest, this, new_socket);
-            t.detach();
-        }
+            return response;
+        };
     }
 
 private:
     int port;
+    std::unordered_map<std::string, std::function<std::string()>> functions;
 
-    void handleRequest(int socket) {
-        // Read the incoming request
+    void handleRequest(int clientSocket) {
         char buffer[1024] = {0};
-        read(socket, buffer, 1024);
+        std::string response;
 
-        // Parse the request using an HTML parser
+        read(clientSocket, buffer, 1024);
+        std::cout << "Received request:\n" << buffer << std::endl;
+
         std::string request(buffer);
-        std::regex regex_method("^([A-Z]+)\\s");
-        std::smatch match_method;
-        std::regex_search(request, match_method, regex_method);
-        std::string method = match_method[1];
-        std::regex regex_path("^([A-Z]+)\\s([^\\s]+)");
-        std::smatch match_path;
-        std::regex_search(request, match_path, regex_path);
-        std::string path = match_path[2];
+        std::string filepath = extractFilePath(request);
 
-        // Implement a rate limiter to control traffic
-        static std::map<std::string, int> request_count;
-        static std::time_t last_time = std::time(nullptr);
-        std::time_t current_time = std::time(nullptr);
-        if (current_time - last_time > 1) {
-            request_count.clear();
-            last_time = current_time;
-        }
-        request_count[path]++;
-        if (request_count[path] > 10) {
-            std::string response = "HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\n\r\n";
-            send(socket, response.c_str(), response.size(), 0);
-            close(socket);
-            return;
+        if (functions.find(filepath) != functions.end()) {
+            response = functions[filepath]();
+        } else {
+            response = "HTTP/1.1 404 Not Found\nContent-Type: text/html\n\n404 Not Found";
         }
 
-        // Use a logging system to record any valuable information
-        std::ofstream log_file("log.txt", std::ios_base::app);
-        std::time_t now = std::time(nullptr);
-        std::tm* local_time = std::localtime(&now);
-        char time_str[20];
-        std::strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", local_time);
-        log_file << time_str << " " << method << " " << path << std::endl;
+        send(clientSocket, response.c_str(), response.length(), 0);
+        std::cout << "Sent response:\n" << response << std::endl;
+    }
 
-        // Serve the HTML file
-        std::ifstream file(path);
-        if (!file.is_open()) {
-            std::string response = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
-            send(socket, response.c_str(), response.size(), 0);
-            close(socket);
-            return;
+    std::string extractFilePath(const std::string& request) {
+        std::string filepath;
+
+        size_t start = request.find("GET ") + 4;
+        size_t end = request.find(" HTTP/1.1");
+
+        if (start != std::string::npos && end != std::string::npos) {
+            filepath = request.substr(start, end - start);
         }
-        std::stringstream buffer_stream;
-        buffer_stream << file.rdbuf();
-        std::string file_content = buffer_stream.str();
-        std::string response = "HTTP/1.1 200 OK\r\nContent-Length: " + std::to_string(file_content.size()) + "\r\n\r\n" + file_content;
-        send(socket, response.c_str(), response.size(), 0);
-        close(socket);
+
+        return filepath;
     }
 };
